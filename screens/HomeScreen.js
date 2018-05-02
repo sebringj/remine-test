@@ -2,7 +2,7 @@ import React from 'react'
 import {
   SafeAreaView,
   Image, Platform, ScrollView, StyleSheet,
-  Text, TouchableOpacity, View, ListView,
+  Text, TouchableOpacity, TouchableHighlight, View, ListView,
   TextInput, ActivityIndicator, Alert, FlatList,
   Dimensions, Keyboard, Animated
 } from 'react-native'
@@ -13,6 +13,9 @@ import _ from 'lodash'
 import { Ionicons } from '@expo/vector-icons'
 import getRangeList from '../utils/getRangeList'
 import { FlexRow, RangeSelector, Search } from '../components'
+import { advancedSearch, simpleSearch } from '../utils/surch'
+
+const LIMIT = 20
 
 export default class HomeScreen extends React.Component {
   static navigationOptions = {
@@ -30,91 +33,88 @@ export default class HomeScreen extends React.Component {
       beds: undefined,
       baths: undefined,
       data: [],
-      scrollY: new Animated.Value(0)
+      scrollY: new Animated.Value(0),
+      offsetSearchControls: new Animated.Value(1)
     }
  
-    this.originalData = []
+    // google distinguises private data as "data_"
+    // and private methods as "_member"
+    // but whatever you guys do, i'll swim with your current
+    this.originalData_ = []
+    this.searchResults_ = []
+    this.offset_ = 0
+
+    this.currentScrollY_ = 0
+    this.lastScrollY_ = 0
+    this.scrollDown_ = false
+    this.hiddenControls_ = false
   }
 
   componentDidMount() {
+    this.state.scrollY.addListener(this._onScroll)
+
     return API.getLocations()
       .then((response) => {
-        this.originalData = response.data
-        const data = this.originalData.slice(0, 100)
-        this.setState({ isLoading: false, data })
+        // add lowered so it matches easier
+        this.originalData_ = response.data.map(item => {
+          item.freeText = item.address && item.address.toLowerCase()
+          return item
+        })
+        this.searchResults_ = this.originalData_
+        this.setState({ isLoading: false, data: this.searchResults_.slice(0, LIMIT) })
       })
       .catch((error) => {
         console.error(error);
       });
   }
 
-  // allows "searching" match-any style based on ranking and in any order case insensitive
-  _surch () {
+  componentWillUnmount() {
+    this.state.scrollY.removeListener(this._onScroll)
+  }
 
-    try {
-      let { baths, beds, buildingType, search } = this.state
-
-      let skipSort = true
-      let re
-      if (search) {
-        // allow arbitrary order and remove stopwords
-        const cleaned = search.split(/\b/g).map(w => w.toLowerCase().trim().replace(/[|&;$%@"<>()+,]/g, ''))
-        for (let i = 0; i < cleaned.length; i++) {
-          if (cleaned[i].trim() === '' || STOP_WORDS.indexOf(cleaned[i]) > -1) {
-            cleaned.splice(i, 1)
-            i--
-          }
-        }
-  
-        if (cleaned.length)
-          re = new RegExp(`\\b(${cleaned.join('|')})\\b`, 'ig')
+  _animateSearchControls = (val) => {
+    Animated.timing(this.state.offsetSearchControls).stop()
+    Animated.timing(
+      this.state.offsetSearchControls, {
+        toValue: val,
+        duration: 1000,
+        useNativeDriver: true
       }
-  
-      const data = []
-  
-      const MAX = 50
-      let counter = 1
-  
-      // put at most 50 items in list
-      for (let i = 0; i < this.originalData.length; i++) {
-        if (counter > MAX) break
+    ).start()
+  }
+
+  _showSearchControls = () => {
+    this.hiddenControls_ = false
+    this._animateSearchControls(1)
+  }
+
+  _hideSearchControls = () => {
+    this.hiddenControls_ = true
+    this._animateSearchControls(0)
+  }
+
+  _onScroll = ({value}) => {
+    this.lastScrollY_ = this.currentScrollY_
+    this.currentScrollY_ = value
     
-        let cloned = {...this.originalData[i]}
-  
-        if (baths && baths.value !== cloned.baths)
-          continue
-        if (beds && beds.value !== cloned.beds)
-          continue
-        if (buildingType && _.get(buildingType, 'value') !== cloned.buildingType.name)
-          continue
-  
-        cloned.rank = 0
-        if (re) {
-          skipSort = false
-          const phrase = `${_.get(cloned, 'buildingType.name', '')} ${cloned.address}`
-          const match = phrase.match(re)
-          if (!match || !match.length)
-            continue
-          cloned.rank = match.length
-        }
-  
-        data.push(cloned)
-        counter++
-      }
-  
-      if (!skipSort) {
-        const compare = (a, b) => {
-          if (a.rank > b.rank) return -1
-          if (a.rank < b.rank) return 1
-          return 0
-        }
-        data.sort(compare)
-      } 
-  
-      this.setState({ data })
-    } catch (err) {
-      console.log(err)
+    if (this.currentScrollY_ > 50 && this.currentScrollY_ > this.lastScrollY_ && !this.scrollingDown_) {
+      this.scrollingDown_ = true
+      this._hideSearchControls()
+    } else if (this.currentScrollY_ > 50 && this.currentScrollY_ < this.lastScrollY_ && this.scrollingDown_) {
+      this.scrollingDown_ = false
+      this._showSearchControls()
+    } else if (this.currentScrollY_ <= 50 && this.hiddenControls_) {
+      this._showSearchControls()
     }
+  }
+
+  _surch = async () => {
+    this.searchResults_ = simpleSearch(this.originalData_, this.state) 
+    this.offset_ = 0
+    this.setState({ data: this.searchResults_.slice(0, LIMIT) }, () => {
+      if (this.refs && this.refs.flatList)
+        this.refs.flatList.scrollToOffset({ offset: 0, animated: false})
+    })
   }
 
   ListViewItemSeparator = () => {
@@ -129,11 +129,10 @@ export default class HomeScreen extends React.Component {
     );
   }
 
-  _onSelectionChange = (key, val) => {
+  _onSelectionChange = async (key, val) => {
+    wait(250)
     this.setState({ [key]: val }, () => {
       this._surch()
-      if (this.refs && this.refs.flatList)
-        this.refs.flatList.scrollToOffset(0)
     })
   }
 
@@ -154,6 +153,24 @@ export default class HomeScreen extends React.Component {
     )
   }
 
+  _onEndReached = () => {
+    if (this.searchResults_.length <= this.offset_)
+      return
+    if (!this.onEndReachedCalledDuringMomentum_) {
+      this.offset_ += LIMIT
+      const appendData = this.searchResults_.slice(this.offset_, this.offset_ + LIMIT)
+      this.setState({ data: this.state.data.concat(appendData) })
+      this.onEndReachedCalledDuringMomentum_ = false
+    }
+  }
+
+  _onRangeSelectorOpen = () => {
+    this.refs.search.focus()
+    this.refs.search.blur()
+    Keyboard.dismiss()
+    this.setState({})
+  }
+
   render() {
     if (this.state.isLoading)
       return (
@@ -162,62 +179,39 @@ export default class HomeScreen extends React.Component {
         </SafeAreaView>
       )
 
-    const opacity = this.state.scrollY.interpolate({
-      inputRange: [0, 50],
-      outputRange: [1, 0],
-      extrapolate: 'clamp'
-    })
-
-    const translateY = this.state.scrollY.interpolate({
-      inputRange: [0, 100],
-      outputRange: [0, -100],
-      extrapolate: 'clamp'
+    const translateY = this.state.offsetSearchControls.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-100, 0]
     })
 
     return (
       <SafeAreaView style={[styles.container, {overflow: 'hidden'}]}>
-        <View style={{
-          zIndex: 1,
-        }}>
-          <TouchableOpacity style={[styles.welcomeContainer, {
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: Dimensions.get('window').width,
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            backgroundColor: '#fff',
-            height: 50,
-            zIndex: 11,
-          }]}
+        <View style={{ zIndex: 1 }}>
+          <View style={styles.coverSafeAreaTop}></View>
+          <TouchableHighlight 
+            style={[styles.welcomeContainer,
+              { width: Dimensions.get('window').width}
+            ]}
             onPress={() => {
               Keyboard.dismiss()
             }}
-            underlayColor="transparent"
+            underlayColor="#fff"
           >
             <Image
               source={require('../assets/images/remine.png')}
               style={styles.welcomeImage}
             />
-          </TouchableOpacity>
+          </TouchableHighlight>
           <Animated.View
-            style={{
-              position: 'absolute',
-              top: 50,
-              left: 0,
-              zIndex: 10,
-              width: Dimensions.get('window').width,
-              backgroundColor: '#fff',
-              height: 100,
-              opacity: opacity,
-              transform: [
-                {
-                  translateY: translateY
-                }
-              ]
-            }}
+            style={[styles.searchControls, 
+              {
+                transform: [{ translateY }],
+                width: Dimensions.get('window').width
+              }
+            ]}
           >
             <Search
+              ref="search"
               value={this.state.search}
               onChangeText={text => {
                 this.setState({ search: text }, () => {
@@ -230,13 +224,7 @@ export default class HomeScreen extends React.Component {
             />
             <FlexRow>
               <RangeSelector 
-                unselectedLabel="Baths ?"
-                selectedItem={this.state.baths}
-                items={getRangeList('Bath', 'Baths', 5)} 
-                onSelectItem={(item) => this._onSelectionChange('baths', item)}
-                onClearSelection={() => this._onSelectionChange('baths', undefined)}
-              />
-              <RangeSelector 
+                onOpen={this._onRangeSelectorOpen}
                 unselectedLabel="Beds ?"
                 selectedItem={this.state.beds}
                 items={getRangeList('Bed', 'Beds', 5)} 
@@ -244,7 +232,16 @@ export default class HomeScreen extends React.Component {
                 onClearSelection={() => this._onSelectionChange('beds', undefined)}
                 />
               <RangeSelector 
-                unselectedLabel="Building Types ?"
+                onOpen={this._onRangeSelectorOpen}
+                unselectedLabel="Baths ?"
+                selectedItem={this.state.baths}
+                items={getRangeList('Bath', 'Baths', 5)} 
+                onSelectItem={(item) => this._onSelectionChange('baths', item)}
+                onClearSelection={() => this._onSelectionChange('baths', undefined)}
+              />
+              <RangeSelector 
+                onOpen={this._onRangeSelectorOpen}
+                unselectedLabel="Building Type ?"
                 selectedItem={this.state.buildingType}
                 items={this.state.buildingTypes} 
                 onSelectItem={(item) => this._onSelectionChange('buildingType', item)}
@@ -253,57 +250,44 @@ export default class HomeScreen extends React.Component {
             </FlexRow>
           </Animated.View>
         </View>
-        <ScrollView 
+        <FlatList
+          ref="flatList"
+          data={this.state.data}
+          keyExtractor={this._keyExtractor}
+          ListEmptyComponent={this._renderEmptyComponent}
+          contentContainerStyle={styles.flatList}
+          renderItem={SearchResult}
+          onEndReachedThreshold={0.5}
+          onMomentumScrollBegin={() => { this.onEndReachedCalledDuringMomentum_ = false; }}
+          onEndReached={this._onEndReached}
+          removeClippedSubviews={true}
           scrollEventThrottle={16}
+          keyboardDismissMode='on-drag'
+          onStartShouldSetResponderCapture={() => Keyboard.dismiss()}
+          onResponderReject={() => Keyboard.dismiss()}
           onScroll={Animated.event([
             { nativeEvent: {contentOffset: {y: this.state.scrollY}} }
           ])}
-          style={styles.container} 
-          contentContainerStyle={styles.contentContainer}>
-          
-          <FlatList
-            ref="flatList"
-            data={this.state.data}
-            keyExtractor={this._keyExtractor}
-            ListEmptyComponent={this._renderEmptyComponent}
-            showsVerticalScrollIndicator={false}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingTop: 130
-            }}
-            renderItem={({item}) => (
-              <View style={{
-                borderBottomWidth: 1,
-                borderBottomColor: '#f2f2f2',
-                flex: -1,
-                alignItems: 'center',
-                justifyContent: 'flex-start',
-                flexDirection: 'row',
-                padding: 20
-              }}>
-                <Ionicons name="md-home" color="#ccc" size={20} style={{ marginRight: 20 }} />
-                <Text style={{
-                  fontSize: 14,
-                  width: Dimensions.get('window').width - 80
-                }}>
-                  <Text style={{ fontWeight: '600' }}>{item.address}</Text> - beds: {item.beds} - baths: {item.baths}
-                </Text>
-              </View>
-            )}
-          />
-
-        </ScrollView>
+        />
       </SafeAreaView>
     );
   }
 }
 
-const STOP_WORDS = [
-  'a', 'also', 'an', 'and', 'are', 'as', 'at', 'be', 'because', 'been',
-  'but', 'by', 'for', 'from', 'has', 'have', 'however', 'if', 'in', 'is',
-  'not', 'of', 'on', 'or', 'p', 'so', 'than', 'that', 'the', 'their', 'there',
-  'these', 'this', 'to', 'was', 'were', 'whatever', 'whether', 'which', 'with', 'would'
-]
+async function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+const SearchResult = ({item}) => (
+  <View style={styles.searchResultContainer}>
+    <Ionicons name="md-home" color="#ccc" size={20} style={{ marginRight: 20 }} />
+    <Text style={styles.searchResultText}>
+      <Text style={styles.searchResultTextHighlight}>{item.address}</Text> - beds: {item.beds} - baths: {item.baths}
+    </Text>
+  </View>
+)
 
 const styles = StyleSheet.create({
   container: {
@@ -322,6 +306,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 0,
     marginBottom: 20,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    backgroundColor: '#fff',
+    height: 50,
+    zIndex: 11,
   },
   welcomeImage: {
     width: 100,
@@ -330,10 +322,45 @@ const styles = StyleSheet.create({
     marginTop: 3,
     marginLeft: -10,
   },
+  coverSafeAreaTop: {
+    position: 'absolute',
+    zIndex: 10,
+    backgroundColor: '#fff',
+    top: -45,
+    height: 45,
+    width: '100%'
+  },
   homeScreenFilename: {
     marginVertical: 7,
   },
   navigationFilename: {
     marginTop: 5,
   },
+  flatList: {
+    paddingTop: 130
+  },
+  searchControls: {
+    position: 'absolute',
+    top: 50,
+    left: 0,
+    zIndex: 9,
+    backgroundColor: '#fff',
+    height: 100
+  },
+  searchResultContainer: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#f2f2f2',
+    flex: -1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    flexDirection: 'row',
+    padding: 20
+  },
+  searchResultText: {
+    fontSize: 14,
+    width: Dimensions.get('window').width - 80
+  },
+  searchResultTextHighlight: {
+    fontWeight: '700'
+  }
 });

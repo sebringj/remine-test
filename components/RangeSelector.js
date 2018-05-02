@@ -21,6 +21,7 @@ export default class RangeSelector extends React.Component {
           this.props.selectedItem ? this.props.selectedItem.text : this.props.unselectedLabel
         }</Button>
         <ItemPicker 
+          onOpen={this.props.onOpen}
           onClearSelection={() => {
             this.props.onClearSelection()
             this.setState({ showPicker: false })

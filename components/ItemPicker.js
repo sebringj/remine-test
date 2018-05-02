@@ -5,6 +5,7 @@ export default (props) => (
   <Modal visible={props.show}
     transparent={true}
     animationType="none"
+    onShow={props.onOpen}
   >
     <View style={{
       flex: 1,
